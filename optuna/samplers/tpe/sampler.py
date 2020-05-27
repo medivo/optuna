@@ -138,6 +138,7 @@ class TPESampler(base.BaseSampler):
         gamma=default_gamma,  # type: Callable[[int], int]
         weights=default_weights,  # type: Callable[[int], np.ndarray]
         seed=None,  # type: Optional[int]
+        constant_liar_type=None,   # type: Optional[str]
     ):
         # type: (...) -> None
 
@@ -152,6 +153,8 @@ class TPESampler(base.BaseSampler):
 
         self._rng = np.random.RandomState(seed)
         self._random_sampler = random.RandomSampler(seed=seed)
+
+        self.constant_liar_type = constant_liar_type
 
     def reseed_rng(self) -> None:
 
@@ -171,7 +174,7 @@ class TPESampler(base.BaseSampler):
     def sample_independent(self, study, trial, param_name, param_distribution):
         # type: (Study, FrozenTrial, str, BaseDistribution) -> Any
 
-        values, scores = _get_observation_pairs(study, param_name, trial)
+        values, scores = _get_observation_pairs(study, param_name, trial, self.constant_liar_type)
 
         n = len(values)
 
@@ -590,8 +593,8 @@ class TPESampler(base.BaseSampler):
         }
 
 
-def _get_observation_pairs(study, param_name, trial):
-    # type: (Study, str, FrozenTrial) -> Tuple[List[Optional[float]], List[Tuple[float, float]]]
+def _get_observation_pairs(study, param_name, trial, constant_liar_type=None):
+    # type: (Study, str, FrozenTrial, Optional[str]) -> Tuple[List[Optional[float]], List[Tuple[float, float]]]
     """Get observation pairs from the study.
 
        This function collects observation pairs from the complete or pruned trials of the study.
@@ -615,9 +618,31 @@ def _get_observation_pairs(study, param_name, trial):
 
     values = []
     scores = []
-    for trial in study.get_trials(deepcopy=False):
+
+    trials = study.get_trials(deepcopy=False)
+
+    completed_values = [
+        trial.value
+        for trial in trials
+        if trial.state is TrialState.COMPLETE and trial.value is not None
+    ]
+
+    constant_liar_value = None
+    if constant_liar_type is not None and len(completed_values) > 0:
+        if constant_liar_type == 'min':
+            constant_liar_value = min(completed_values)
+        elif constant_liar_type == 'max':
+            constant_liar_value = max(completed_values)
+        elif constant_liar_value == 'mean':
+            constant_liar_value = sum(completed_values) / len(completed_values)
+        else:
+            raise NotImplementedError("Only 'min', 'max' and 'mean' constant liars are implemented")
+
+    for trial in trials:
         if trial.state is TrialState.COMPLETE and trial.value is not None:
             score = (-float("inf"), sign * trial.value)
+        elif trial.state is TrialState.RUNNING and constant_liar_value is not None:
+            score = (-float("inf"), sign * constant_liar_value)
         elif trial.state is TrialState.PRUNED:
             if len(trial.intermediate_values) > 0:
                 step, intermediate_value = max(trial.intermediate_values.items())
